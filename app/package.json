@@ -14,7 +14,7 @@
     "tauri:dev": "RUST_BACKTRACE=1 tauri dev",
     "tauri:build:desktop:local": "tauri build --no-bundle",
     "tauri:android:dev": "tauri android dev --host",
-    "tauri:android:build": "tauri android build",
+    "tauri:android:build": "tauri android build --target aarch64 --apk",
     "tauri:desktop:build": "tauri build",
     "svg2vectordrawable": "bun add svg2vectordrawable"
   },

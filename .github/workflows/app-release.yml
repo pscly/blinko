@@ -307,7 +307,7 @@ jobs:
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android
 
       - name: Rust Cache
         if: github.event.inputs.disable-all-cache != 'true'
@@ -359,26 +359,30 @@ jobs:
       - name: Build Android App
         run: |
           cd app
-          bun run tauri:android:build
+          bun run tauri:android:build -- --target aarch64 --apk
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.11902837
 
       - name: Rename Android App File
         run: |
-          cd app/src-tauri/gen/android/app/build/outputs/apk/universal/release
+          set -euo pipefail
           VERSION="${{ needs.set-version.outputs.version }}"
-          echo "Original APK file:"
-          ls -la
-          # Rename APK file
-          mv app-universal-release.apk Blinko_${VERSION}_universal.apk
-          echo "Renamed APK file:"
-          ls -la
+          APK_ROOT="app/src-tauri/gen/android/app/build/outputs/apk"
+          mkdir -p android-apk-artifacts
+          mapfile -t APK_CANDIDATES < <(find "$APK_ROOT" -type f -name '*release*.apk' ! -path '*/universal/*' | sort)
+          if [ "${#APK_CANDIDATES[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one arm64-v8a release APK, found ${#APK_CANDIDATES[@]}."
+            find "$APK_ROOT" -type f -name '*.apk' -print || true
+            exit 1
+          fi
+          cp "${APK_CANDIDATES[0]}" "android-apk-artifacts/Blinko_${VERSION}_arm64-v8a.apk"
+          ls -lh android-apk-artifacts
 
       - name: Upload Android App to Release
         if: github.event.inputs.is-test != 'true'
         uses: softprops/action-gh-release@v1
         with:
-          files: app/src-tauri/gen/android/app/build/outputs/apk/universal/release/Blinko_${{ needs.set-version.outputs.version }}_universal.apk
+          files: android-apk-artifacts/Blinko_${{ needs.set-version.outputs.version }}_arm64-v8a.apk
           tag_name: ${{ needs.set-version.outputs.version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -388,7 +392,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: blinko-test-android-${{ needs.set-version.outputs.version }}
-          path: app/src-tauri/gen/android/app/build/outputs/apk/universal/release/Blinko_${{ needs.set-version.outputs.version }}_universal.apk
+          path: android-apk-artifacts/Blinko_${{ needs.set-version.outputs.version }}_arm64-v8a.apk
           retention-days: 7
 
   # Generate changelog after all builds are complete

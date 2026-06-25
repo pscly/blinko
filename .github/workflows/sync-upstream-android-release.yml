@@ -210,8 +210,8 @@ jobs:
         run: |
           set -euo pipefail
           RELEASE_TAG="android-quick-capture-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          APK_ASSET_NAME="Blinko_${RELEASE_TAG}_universal.apk"
-          APK_PATH="app/src-tauri/gen/android/app/build/outputs/apk/universal/release/${APK_ASSET_NAME}"
+          APK_ASSET_NAME="Blinko_${RELEASE_TAG}_arm64-v8a.apk"
+          APK_PATH="android-apk-artifacts/${APK_ASSET_NAME}"
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "apk_asset_name=$APK_ASSET_NAME" >> "$GITHUB_OUTPUT"
           echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
@@ -242,7 +242,7 @@ jobs:
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -298,7 +298,7 @@ jobs:
         run: |
           set -euo pipefail
           cd app
-          bun run tauri:android:build
+          bun run tauri:android:build -- --target aarch64 --apk
 
       - name: Stop after Android build failure
         if: steps.build_android.outcome == 'failure'
@@ -312,14 +312,16 @@ jobs:
       - name: Rename Android APK asset
         run: |
           set -euo pipefail
-          APK_DIR="app/src-tauri/gen/android/app/build/outputs/apk/universal/release"
-          SOURCE_APK="$APK_DIR/app-universal-release.apk"
+          mkdir -p android-apk-artifacts
+          APK_ROOT="app/src-tauri/gen/android/app/build/outputs/apk"
           TARGET_APK="${{ steps.release_metadata.outputs.apk_path }}"
-          if [ ! -f "$SOURCE_APK" ]; then
-            echo "::error::Expected Android APK not found at $SOURCE_APK. Release publication was skipped."
+          mapfile -t APK_CANDIDATES < <(find "$APK_ROOT" -type f -name '*release*.apk' ! -path '*/universal/*' | sort)
+          if [ "${#APK_CANDIDATES[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one signed arm64-v8a release APK, found ${#APK_CANDIDATES[@]}. Release publication was skipped."
+            find "$APK_ROOT" -type f -name '*.apk' -print || true
             exit 1
           fi
-          mv "$SOURCE_APK" "$TARGET_APK"
+          cp "${APK_CANDIDATES[0]}" "$TARGET_APK"
           echo "Renamed Android APK to ${{ steps.release_metadata.outputs.apk_asset_name }}"
 
       - name: Publish GitHub Release with APK
@@ -335,6 +337,7 @@ jobs:
             - Custom branch: ${{ needs.sync-upstream.outputs.custom_branch }}
             - Marker ref: ${{ needs.sync-upstream.outputs.marker_ref }}
             - Sync SHA: ${{ needs.sync-upstream.outputs.sync_sha }}
+            - ABI: arm64-v8a only
             - APK asset: ${{ steps.release_metadata.outputs.apk_asset_name }}
           files: ${{ steps.release_metadata.outputs.apk_path }}
           fail_on_unmatched_files: true

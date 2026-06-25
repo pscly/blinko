@@ -89,7 +89,23 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=4096
         run: |
           set -euo pipefail
-          rm -f app/src-tauri/gen/android/keystore.properties
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair \
+            -v \
+            -keystore "$HOME/.android/debug-upload-keystore.jks" \
+            -storepass android \
+            -keypass android \
+            -alias upload \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Blinko,C=US"
+          mkdir -p app/src-tauri/gen/android
+          cat > app/src-tauri/gen/android/keystore.properties <<EOF
+          password=android
+          keyAlias=upload
+          storeFile=$HOME/.android/debug-upload-keystore.jks
+          EOF
           cd app
           bun run tauri:android:build -- --debug --apk --ci
 

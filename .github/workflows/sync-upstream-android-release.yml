@@ -1,0 +1,506 @@
+name: Sync Upstream Android Release
+
+run-name: >-
+  ${{
+    github.event_name == 'workflow_dispatch' && format('Sync upstream {0} into {1}', github.event.inputs.upstream_branch || 'main', github.event.inputs.custom_branch || 'custom/android-quick-capture') ||
+    'Scheduled upstream sync for Android quick capture'
+  }}
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_repo:
+        description: 'Upstream repository URL'
+        required: false
+        type: string
+        default: 'https://github.com/blinko-space/blinko'
+      upstream_branch:
+        description: 'Upstream branch to merge'
+        required: false
+        type: string
+        default: 'main'
+      custom_branch:
+        description: 'Custom branch to update'
+        required: false
+        type: string
+        default: 'custom/android-quick-capture'
+      marker_prefix:
+        description: 'Branch marker prefix for Task 7 handoff'
+        required: false
+        type: string
+        default: 'sync/android-quick-capture'
+      dry_run:
+        description: 'Validate and merge locally without pushing markers, releases, or APKs'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.inputs.custom_branch || 'custom/android-quick-capture' }}
+  cancel-in-progress: false
+
+env:
+  DEFAULT_UPSTREAM_REPO: https://github.com/blinko-space/blinko
+  DEFAULT_UPSTREAM_BRANCH: main
+  DEFAULT_CUSTOM_BRANCH: custom/android-quick-capture
+  DEFAULT_MARKER_PREFIX: sync/android-quick-capture
+  ANDROID_NDK_VERSION: 27.0.11902837
+
+jobs:
+  sync-upstream:
+    name: Merge Upstream Into Android Custom Branch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      custom_branch: ${{ steps.sync.outputs.custom_branch }}
+      upstream_ref: ${{ steps.sync.outputs.upstream_ref }}
+      marker_branch: ${{ steps.sync.outputs.marker_branch }}
+      marker_ref: ${{ steps.sync.outputs.marker_ref }}
+      sync_sha: ${{ steps.sync.outputs.sync_sha }}
+      sync_pushed: ${{ steps.sync.outputs.sync_pushed }}
+    steps:
+      - name: Checkout custom branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+          ref: ${{ github.event.inputs.custom_branch || env.DEFAULT_CUSTOM_BRANCH }}
+
+      - name: Validate sync token
+        if: github.event.inputs.dry_run != 'true'
+        env:
+          SYNC_PAT: ${{ secrets.SYNC_PAT }}
+        run: |
+          if [ -z "$SYNC_PAT" ]; then
+            echo "::error::Missing required SYNC_PAT secret. Add a PAT with contents:write before running publish sync."
+            echo "### Sync failed" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Failure: missing required SYNC_PAT secret before any push, marker, release, or APK publication." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "SYNC_PAT is configured; continuing with push-capable sync."
+
+      - name: Merge upstream and publish marker
+        id: sync
+        env:
+          UPSTREAM_REPO_INPUT: ${{ github.event.inputs.upstream_repo }}
+          UPSTREAM_BRANCH_INPUT: ${{ github.event.inputs.upstream_branch }}
+          CUSTOM_BRANCH_INPUT: ${{ github.event.inputs.custom_branch }}
+          MARKER_PREFIX_INPUT: ${{ github.event.inputs.marker_prefix }}
+          DRY_RUN_INPUT: ${{ github.event.inputs.dry_run }}
+          SYNC_PAT: ${{ secrets.SYNC_PAT }}
+        run: |
+          set -euo pipefail
+
+          UPSTREAM_REPO="${UPSTREAM_REPO_INPUT:-$DEFAULT_UPSTREAM_REPO}"
+          UPSTREAM_BRANCH="${UPSTREAM_BRANCH_INPUT:-$DEFAULT_UPSTREAM_BRANCH}"
+          CUSTOM_BRANCH="${CUSTOM_BRANCH_INPUT:-$DEFAULT_CUSTOM_BRANCH}"
+          MARKER_PREFIX="${MARKER_PREFIX_INPUT:-$DEFAULT_MARKER_PREFIX}"
+          DRY_RUN="${DRY_RUN_INPUT:-false}"
+          MARKER_BRANCH="${MARKER_PREFIX}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          if [[ ! "$UPSTREAM_REPO" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/?$ ]]; then
+            echo "::error::Invalid upstream_repo. Use an https://github.com/owner/repo URL."
+            exit 1
+          fi
+
+          for REF_VALUE in "$UPSTREAM_BRANCH" "$CUSTOM_BRANCH" "$MARKER_PREFIX"; do
+            if ! git check-ref-format --allow-onelevel "$REF_VALUE"; then
+              echo "::error::Invalid ref input: $REF_VALUE"
+              exit 1
+            fi
+          done
+
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM_REPO"
+
+          echo "Fetching custom branch $CUSTOM_BRANCH from origin with full history."
+          git fetch --prune origin "+refs/heads/${CUSTOM_BRANCH}:refs/remotes/origin/${CUSTOM_BRANCH}"
+          git checkout -B "$CUSTOM_BRANCH" "origin/$CUSTOM_BRANCH"
+
+          echo "Fetching upstream branch $UPSTREAM_BRANCH from $UPSTREAM_REPO with full history."
+          git fetch --prune upstream "+refs/heads/${UPSTREAM_BRANCH}:refs/remotes/upstream/${UPSTREAM_BRANCH}"
+
+          if ! git merge --no-edit --no-ff "upstream/$UPSTREAM_BRANCH"; then
+            echo "::error::Upstream merge conflict. Resolve conflicts on $CUSTOM_BRANCH manually; workflow did not push a partial merge, marker, release, or APK."
+            echo "### Sync failed" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Failure: upstream merge conflict while merging upstream/$UPSTREAM_BRANCH into $CUSTOM_BRANCH." >> "$GITHUB_STEP_SUMMARY"
+            echo "- Safety: merge aborted; no branch update, marker ref, release, or APK was published." >> "$GITHUB_STEP_SUMMARY"
+            git merge --abort || true
+            exit 1
+          fi
+
+          SYNC_SHA="$(git rev-parse HEAD)"
+          UPSTREAM_REF="upstream/${UPSTREAM_BRANCH}"
+          MARKER_REF="refs/heads/${MARKER_BRANCH}"
+
+          echo "custom_branch=$CUSTOM_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "upstream_ref=$UPSTREAM_REF" >> "$GITHUB_OUTPUT"
+          echo "marker_branch=$MARKER_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "marker_ref=$MARKER_REF" >> "$GITHUB_OUTPUT"
+          echo "sync_sha=$SYNC_SHA" >> "$GITHUB_OUTPUT"
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "sync_pushed=false" >> "$GITHUB_OUTPUT"
+            echo "Dry run complete. Marker branch, release tag, and Android APK were not published: $MARKER_BRANCH at $SYNC_SHA"
+            exit 0
+          fi
+
+          if [ -z "$SYNC_PAT" ]; then
+            echo "::error::Missing required SYNC_PAT secret before push operation."
+            exit 1
+          fi
+
+          git push origin "HEAD:${CUSTOM_BRANCH}"
+          git push origin "HEAD:${MARKER_BRANCH}"
+
+          echo "sync_pushed=true" >> "$GITHUB_OUTPUT"
+          echo "Published sync marker $MARKER_REF at $SYNC_SHA for Android release build."
+
+      - name: Task 7 handoff summary
+        run: |
+          echo "### Android quick capture sync handoff" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Custom branch: ${{ steps.sync.outputs.custom_branch }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Upstream ref: ${{ steps.sync.outputs.upstream_ref }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Marker ref: ${{ steps.sync.outputs.marker_ref }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Sync SHA: ${{ steps.sync.outputs.sync_sha }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Pushed: ${{ steps.sync.outputs.sync_pushed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Dry run release publishing: ${{ github.event.inputs.dry_run == 'true' && 'disabled' || 'enabled after Android build/sign success' }}" >> "$GITHUB_STEP_SUMMARY"
+
+  build-release-android:
+    name: Build, Sign, and Release Android APK
+    runs-on: ubuntu-latest
+    needs: sync-upstream
+    if: needs.sync-upstream.result == 'success' && needs.sync-upstream.outputs.sync_pushed == 'true'
+    permissions:
+      contents: write
+    outputs:
+      release_tag: ${{ steps.release_metadata.outputs.release_tag }}
+      apk_asset_name: ${{ steps.release_metadata.outputs.apk_asset_name }}
+      release_url: ${{ steps.publish_release.outputs.url }}
+    steps:
+      - name: Checkout sync marker branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+          ref: ${{ needs.sync-upstream.outputs.marker_branch }}
+
+      - name: Validate Android signing inputs
+        env:
+          UPLOAD_KEYSTORE: ${{ secrets.UPLOAD_KEYSTORE }}
+        run: |
+          if [ -z "$UPLOAD_KEYSTORE" ]; then
+            echo "::error::Missing required Android signing secret UPLOAD_KEYSTORE. Android release build stopped before APK publication."
+            echo "### Android release failed" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Failure: missing required signing secret UPLOAD_KEYSTORE." >> "$GITHUB_STEP_SUMMARY"
+            echo "- Safety: no Android APK was built, signed, or published." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "Android signing inputs validated without printing secret values. Repository keystore password and key alias constants match app-release.yml."
+
+      - name: Prepare deterministic release metadata
+        id: release_metadata
+        run: |
+          set -euo pipefail
+          RELEASE_TAG="android-quick-capture-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          APK_ASSET_NAME="Blinko_${RELEASE_TAG}_universal.apk"
+          APK_PATH="app/src-tauri/gen/android/app/build/outputs/apk/universal/release/${APK_ASSET_NAME}"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "apk_asset_name=$APK_ASSET_NAME" >> "$GITHUB_OUTPUT"
+          echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $RELEASE_TAG"
+          echo "APK asset name: $APK_ASSET_NAME"
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: sdkmanager "ndk;${ANDROID_NDK_VERSION}"
+
+      - name: Setup Node Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Increase Node.js memory limit for Android build
+        run: |
+          echo "NODE_OPTIONS=--max-old-space-size=4096" >> "$GITHUB_ENV"
+
+      - name: Install Rust Stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+          cache-on-failure: true
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.2.8
+
+      - name: Install Dependencies
+        run: |
+          bun install --frozen-lockfile
+
+      - name: Run Prisma Generate
+        run: bun run prisma:generate
+
+      - name: Configure Gradle Cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0.0-alpha"
+
+      - name: Configure Android keystore
+        env:
+          UPLOAD_KEYSTORE: ${{ secrets.UPLOAD_KEYSTORE }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.android"
+          printf '%s' "$UPLOAD_KEYSTORE" | base64 --decode > "$HOME/.android/upload-keystore.jks"
+          chmod 600 "$HOME/.android/upload-keystore.jks"
+          mkdir -p app/src-tauri/gen/android
+          cat > app/src-tauri/gen/android/keystore.properties <<EOF
+          password=106111
+          keyAlias=upload
+          storeFile=$HOME/.android/upload-keystore.jks
+          EOF
+
+      - name: Build Android App
+        id: build_android
+        continue-on-error: true
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.ANDROID_NDK_VERSION }}
+        run: |
+          set -euo pipefail
+          cd app
+          bun run tauri:android:build
+
+      - name: Stop after Android build failure
+        if: steps.build_android.outcome == 'failure'
+        run: |
+          echo "::error::Android build failed. Release publication was skipped; see setup and build logs for the exact failing command."
+          echo "### Android release failed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Failure: Android build command failed." >> "$GITHUB_STEP_SUMMARY"
+          echo "- Safety: no GitHub Release was created or updated with APK assets." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: Rename Android APK asset
+        run: |
+          set -euo pipefail
+          APK_DIR="app/src-tauri/gen/android/app/build/outputs/apk/universal/release"
+          SOURCE_APK="$APK_DIR/app-universal-release.apk"
+          TARGET_APK="${{ steps.release_metadata.outputs.apk_path }}"
+          if [ ! -f "$SOURCE_APK" ]; then
+            echo "::error::Expected Android APK not found at $SOURCE_APK. Release publication was skipped."
+            exit 1
+          fi
+          mv "$SOURCE_APK" "$TARGET_APK"
+          echo "Renamed Android APK to ${{ steps.release_metadata.outputs.apk_asset_name }}"
+
+      - name: Publish GitHub Release with APK
+        id: publish_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.release_metadata.outputs.release_tag }}
+          target_commitish: ${{ needs.sync-upstream.outputs.sync_sha }}
+          name: Blinko Android Quick Capture ${{ steps.release_metadata.outputs.release_tag }}
+          body: |
+            Automated Android quick-capture APK release from upstream sync.
+
+            - Custom branch: ${{ needs.sync-upstream.outputs.custom_branch }}
+            - Marker ref: ${{ needs.sync-upstream.outputs.marker_ref }}
+            - Sync SHA: ${{ needs.sync-upstream.outputs.sync_sha }}
+            - APK asset: ${{ steps.release_metadata.outputs.apk_asset_name }}
+          files: ${{ steps.release_metadata.outputs.apk_path }}
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Android release summary
+        run: |
+          echo "### Android release published" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Release tag: ${{ steps.release_metadata.outputs.release_tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- APK asset: ${{ steps.release_metadata.outputs.apk_asset_name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Release URL: ${{ steps.publish_release.outputs.url }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Android release failure summary
+        if: failure()
+        run: |
+          echo "### Android release failed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Release tag candidate: ${{ steps.release_metadata.outputs.release_tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Safety: failed signing, build, rename, or upload steps stop before fake APK publication." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup signing files
+        if: always()
+        run: |
+          rm -f "$HOME/.android/upload-keystore.jks"
+          rm -f app/src-tauri/gen/android/keystore.properties
+          echo "Cleaned Android signing files from runner workspace."
+
+  notify:
+    name: Notify Sync and Android Release Result
+    runs-on: ubuntu-latest
+    needs: [sync-upstream, build-release-android]
+    if: always()
+    permissions:
+      contents: read
+    steps:
+      - name: Prepare notification message
+        id: notification
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_GROUP_ID_1: ${{ secrets.TELEGRAM_GROUP_ID_1 }}
+          TELEGRAM_GROUP_ID_2: ${{ secrets.TELEGRAM_GROUP_ID_2 }}
+          SYNC_RESULT: ${{ needs.sync-upstream.result }}
+          BUILD_RESULT: ${{ needs.build-release-android.result }}
+          RELEASE_TAG: ${{ needs.build-release-android.outputs.release_tag }}
+          APK_ASSET_NAME: ${{ needs.build-release-android.outputs.apk_asset_name }}
+          RELEASE_URL: ${{ needs.build-release-android.outputs.release_url }}
+          MARKER_REF: ${{ needs.sync-upstream.outputs.marker_ref }}
+          SYNC_SHA: ${{ needs.sync-upstream.outputs.sync_sha }}
+        run: |
+          set -euo pipefail
+
+          STATUS="failure"
+          TITLE="❌ Blinko Android quick-capture sync/release failed"
+          FAILURE_DETAIL="Check workflow logs for the failed sync, signing, Android build, release, or notification step."
+
+          if [ "$SYNC_RESULT" != "success" ]; then
+            FAILURE_DETAIL="Sync failed before Android release. Merge conflicts are aborted without pushing partial merges, markers, releases, or APKs."
+          elif [ "$BUILD_RESULT" = "success" ]; then
+            STATUS="success"
+            TITLE="✅ Blinko Android quick-capture APK released"
+            FAILURE_DETAIL=""
+          elif [ "$BUILD_RESULT" = "skipped" ]; then
+            FAILURE_DETAIL="Android build/release was skipped because sync was a dry run or did not publish a marker branch."
+          else
+            FAILURE_DETAIL="Android signing, build, or release publication failed. No fake APK release is published on failed build/signing checks."
+          fi
+
+          {
+            echo "message<<EOF"
+            echo "$TITLE"
+            echo ""
+            echo "Sync result: $SYNC_RESULT"
+            echo "Android build/release result: $BUILD_RESULT"
+            echo "Marker ref: ${MARKER_REF:-not published}"
+            echo "Sync SHA: ${SYNC_SHA:-unavailable}"
+            if [ "$STATUS" = "success" ]; then
+              echo "Release tag: $RELEASE_TAG"
+              echo "APK asset: $APK_ASSET_NAME"
+              echo "Release: $RELEASE_URL"
+            else
+              echo "Failure: $FAILURE_DETAIL"
+              echo "Workflow: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_GROUP_ID_1" ]; then
+            echo "telegram_group_1_available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "telegram_group_1_available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_GROUP_ID_2" ]; then
+            echo "telegram_group_2_available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "telegram_group_2_available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "### Android quick capture sync/release notification" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Status: $STATUS" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Sync result: $SYNC_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Android build/release result: $BUILD_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Release tag: ${RELEASE_TAG:-not published}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- APK asset: ${APK_ASSET_NAME:-not published}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Release URL: ${RELEASE_URL:-not published}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Send Telegram notification to group 1
+        id: telegram_group_1
+        if: steps.notification.outputs.telegram_group_1_available == 'true'
+        uses: appleboy/telegram-action@v0.1.1
+        continue-on-error: true
+        with:
+          to: ${{ secrets.TELEGRAM_GROUP_ID_1 }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          format: html
+          debug: true
+          message: |
+            ${{ steps.notification.outputs.message }}
+
+      - name: Send Telegram notification to group 2
+        id: telegram_group_2
+        if: steps.notification.outputs.telegram_group_2_available == 'true'
+        uses: appleboy/telegram-action@v0.1.1
+        continue-on-error: true
+        with:
+          to: ${{ secrets.TELEGRAM_GROUP_ID_2 }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          format: html
+          debug: true
+          message: |
+            ${{ steps.notification.outputs.message }}
+
+      - name: Verify notification delivery or fallback
+        if: always()
+        env:
+          GROUP_1_AVAILABLE: ${{ steps.notification.outputs.telegram_group_1_available }}
+          GROUP_2_AVAILABLE: ${{ steps.notification.outputs.telegram_group_2_available }}
+          GROUP_1_OUTCOME: ${{ steps.telegram_group_1.outcome }}
+          GROUP_2_OUTCOME: ${{ steps.telegram_group_2.outcome }}
+        run: |
+          set -euo pipefail
+          FAILED=false
+
+          if [ "$GROUP_1_AVAILABLE" = "true" ] && [ "$GROUP_1_OUTCOME" = "failure" ]; then
+            echo "::error::Telegram notification to TELEGRAM_GROUP_ID_1 failed. GitHub summary remains available as fallback."
+            FAILED=true
+          fi
+
+          if [ "$GROUP_2_AVAILABLE" = "true" ] && [ "$GROUP_2_OUTCOME" = "failure" ]; then
+            echo "::error::Telegram notification to TELEGRAM_GROUP_ID_2 failed. GitHub summary remains available as fallback."
+            FAILED=true
+          fi
+
+          if [ "$GROUP_1_AVAILABLE" != "true" ] && [ "$GROUP_2_AVAILABLE" != "true" ]; then
+            echo "::warning::Telegram secrets are not fully configured; using GitHub Actions summary and release page as notification fallback."
+            echo "- Telegram fallback: bot token/group secrets unavailable, so GitHub summary/release/action links are the notification channel." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "$FAILED" = "true" ]; then
+            echo "### Notification failed" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Failure: one or more configured Telegram sends failed after the sync/release result was known." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "Notification completed or safely fell back to GitHub summary."

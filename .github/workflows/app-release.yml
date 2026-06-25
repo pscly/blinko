@@ -369,13 +369,34 @@ jobs:
           VERSION="${{ needs.set-version.outputs.version }}"
           APK_ROOT="app/src-tauri/gen/android/app/build/outputs/apk"
           mkdir -p android-apk-artifacts
-          mapfile -t APK_CANDIDATES < <(find "$APK_ROOT" -type f -name '*release*.apk' ! -path '*/universal/*' | sort)
+          mapfile -t APK_CANDIDATES < <(find "$APK_ROOT" -type f -name '*release*.apk' | sort)
           if [ "${#APK_CANDIDATES[@]}" -ne 1 ]; then
             echo "::error::Expected exactly one arm64-v8a release APK, found ${#APK_CANDIDATES[@]}."
             find "$APK_ROOT" -type f -name '*.apk' -print || true
             exit 1
           fi
-          cp "${APK_CANDIDATES[0]}" "android-apk-artifacts/Blinko_${VERSION}_arm64-v8a.apk"
+          SOURCE_APK="${APK_CANDIDATES[0]}"
+          python3 - "$SOURCE_APK" <<'PY'
+          import sys
+          import zipfile
+
+          apk_path = sys.argv[1]
+          disallowed_prefixes = (
+              "lib/armeabi-v7a/",
+              "lib/x86/",
+              "lib/x86_64/",
+          )
+          with zipfile.ZipFile(apk_path) as apk:
+              names = apk.namelist()
+          has_arm64 = any(name.startswith("lib/arm64-v8a/") for name in names)
+          disallowed = [name for name in names if name.startswith(disallowed_prefixes)]
+          if not has_arm64:
+              raise SystemExit("APK does not contain arm64-v8a native libraries")
+          if disallowed:
+              raise SystemExit("APK contains non-arm64 native libraries: " + ", ".join(disallowed[:10]))
+          print("APK ABI validation passed: arm64-v8a only")
+          PY
+          cp "$SOURCE_APK" "android-apk-artifacts/Blinko_${VERSION}_arm64-v8a.apk"
           ls -lh android-apk-artifacts
 
       - name: Upload Android App to Release

@@ -4,10 +4,10 @@ import { BlinkoStore } from "@/store/blinkoStore";
 import { RootStore } from "@/store";
 import { isAndroid, isInTauri } from '@/lib/tauriHelper';
 import { ShowEditBlinkoModel } from '@/components/BlinkoRightClickMenu';
-import { eventBus } from '@/lib/event';
+import { consumeAndroidShortcutAction } from './androidShortcutActions';
+import { handleAndroidShortcutAction } from './androidShortcutHandlers';
 
 import { readFile } from "@tauri-apps/plugin-fs";
-import { FocusEditorFixMobile } from "@/components/Common/Editor/editorUtils";
 import { ToastPlugin } from "@/store/module/Toast/Toast";
 
 export const useConfigSetting = (configKey: keyof BlinkoStore['config']['value']) => {
@@ -177,7 +177,7 @@ export const useIsIOS = () => {
 };
 
 // Global state for Android shortcuts handling
-let androidShortcutsIntervalId: NodeJS.Timeout | null = null;
+let androidShortcutsIntervalId: ReturnType<typeof setInterval> | null = null;
 let isProcessingSharedData = false;
 let isInitialized = false;
 
@@ -191,23 +191,9 @@ const initializeAndroidShortcuts = () => {
 
   const checkAndroidData = () => {
       // Handle shortcuts
-      const action = window.localStorage.getItem('android_shortcut_action');
+      const action = consumeAndroidShortcutAction(window.localStorage);
       if (action) {
-        window.localStorage.removeItem('android_shortcut_action');
-        switch (action) {
-          case 'quick_note':
-            ShowEditBlinkoModel('2xl', 'create');
-            FocusEditorFixMobile()
-            break;
-
-          case 'voice_recording':
-            ShowEditBlinkoModel('2xl', 'create');
-            // Use eventBus to trigger audio recording after editor is ready
-            setTimeout(() => {
-              eventBus.emit('editor:startAudioRecording');
-            }, 300);
-            break;
-        }
+        handleAndroidShortcutAction(action);
       }
 
       // Handle shared data
@@ -284,6 +270,4 @@ export const useAndroidShortcuts = () => {
     };
   }, []);
 };
-
-
 

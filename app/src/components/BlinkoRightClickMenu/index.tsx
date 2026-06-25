@@ -24,6 +24,7 @@ import { useLocation } from "react-router-dom";
 import { ShowCommentDialog } from "../BlinkoCard/commentButton";
 import { useMediaQuery } from "usehooks-ts";
 import { FocusEditorFixMobile } from "@/components/Common/Editor/editorUtils";
+import type { EditorInitialData } from "../Common/Editor/type";
 
 
 export const ShowEditTimeModel = (showExpired: boolean = false) => {
@@ -179,8 +180,10 @@ export const ShowEditTimeModel = (showExpired: boolean = false) => {
   })
 }
 
-export const ShowEditBlinkoModel = (size: string = '2xl', mode: 'create' | 'edit' = 'edit', initialData?: { file?: File, text?: string }) => {
+export const ShowEditBlinkoModel = (size: string = '2xl', mode: 'create' | 'edit' = 'edit', initialData?: EditorInitialData) => {
   const blinko = RootStore.Get(BlinkoStore)
+  const dialog = RootStore.Get(DialogStore)
+
   RootStore.Get(DialogStore).setData({
     size: size as any,
     isOpen: true,
@@ -188,7 +191,7 @@ export const ShowEditBlinkoModel = (size: string = '2xl', mode: 'create' | 'edit
     isDismissable: false,
     showOnlyContentCloseButton: true,
     content: <BlinkoEditor isInDialog mode={mode} initialData={initialData} key={`editor-key-${mode}`} onSended={() => {
-      RootStore.Get(DialogStore).close()
+      dialog.close()
       blinko.isCreateMode = false
     }} />
   })

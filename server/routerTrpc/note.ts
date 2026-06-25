@@ -43,6 +43,8 @@ export const noteRouter = router({
         startDate: z.union([z.date(), z.null(), z.string()]).default(null).optional(),
         endDate: z.union([z.date(), z.null(), z.string()]).default(null).optional(),
         hasTodo: z.boolean().default(false).optional(),
+        editableOnly: z.boolean().default(false).optional(),
+        recentOnly: z.boolean().default(false).optional(),
       }),
     )
     .output(
@@ -104,7 +106,13 @@ export const noteRouter = router({
       ),
     )
     .mutation(async function ({ input, ctx }) {
-      const { tagId, type, isArchived, isRecycle, searchText, page, size, orderBy, withFile, withoutTag, withLink, isUseAiQuery, startDate, endDate, isShare, hasTodo } = input;
+      const { tagId, type, isArchived, isRecycle, searchText, page, size, orderBy, withFile, withoutTag, withLink, isUseAiQuery, startDate, endDate, isShare, hasTodo, editableOnly, recentOnly } = input;
+      const currentUserId = Number(ctx.id);
+      const ownNoteWhere = { accountId: currentUserId };
+      const sharedNoteWhere = editableOnly
+        ? { internalShares: { some: { accountId: currentUserId, canEdit: true } } }
+        : { internalShares: { some: { accountId: currentUserId } } };
+
       if (isUseAiQuery && searchText?.trim() != '') {
         const cleanedQuery = searchText?.replace(/@/g, '').trim();
         if (cleanedQuery && cleanedQuery.length > 0) {
@@ -119,8 +127,8 @@ export const noteRouter = router({
 
       let where: Prisma.notesWhereInput = {
         OR: [
-          { accountId: Number(ctx.id) },
-          { internalShares: { some: { accountId: Number(ctx.id) } } }
+          ownNoteWhere,
+          sharedNoteWhere,
         ],
         isRecycle: isRecycle
       };
@@ -129,19 +137,19 @@ export const noteRouter = router({
         where = {
           OR: [
             {
-              accountId: Number(ctx.id),
+              ...ownNoteWhere,
               content: { contains: searchText, mode: 'insensitive' }
             },
             {
-              accountId: Number(ctx.id),
+              ...ownNoteWhere,
               attachments: { some: { path: { contains: searchText, mode: 'insensitive' } } }
             },
             {
-              internalShares: { some: { accountId: Number(ctx.id) } },
+              ...sharedNoteWhere,
               content: { contains: searchText, mode: 'insensitive' }
             },
             {
-              internalShares: { some: { accountId: Number(ctx.id) } },
+              ...sharedNoteWhere,
               attachments: { some: { path: { contains: searchText, mode: 'insensitive' } } }
             }
           ],
@@ -192,10 +200,13 @@ export const noteRouter = router({
       }
       const config = await getGlobalConfig({ ctx });
       let timeOrderBy = config?.isOrderByCreateTime ? { createdAt: orderBy } : { updatedAt: orderBy };
+      const listOrderBy = recentOnly
+        ? [{ updatedAt: 'desc' as const }]
+        : [{ isTop: 'desc' as const }, { sortOrder: 'asc' as const }, timeOrderBy];
 
       const notes = await prisma.notes.findMany({
         where,
-        orderBy: [{ isTop: 'desc' }, { sortOrder: 'asc' }, timeOrderBy],
+        orderBy: listOrderBy,
         skip: (page - 1) * size,
         take: size,
         include: {
@@ -244,14 +255,24 @@ export const noteRouter = router({
               histories: true,
             },
           },
-          internalShares: true,
+          internalShares: {
+            where: { accountId: currentUserId },
+            select: { canEdit: true },
+          },
         },
       });
 
-      return notes.map((note) => ({
-        ...note,
-        isInternalShared: note.internalShares.length > 0,
-      }));
+      return notes.map(({ internalShares, ...note }) => {
+        const isOwner = note.accountId === currentUserId;
+        const hasInternalShare = internalShares.length > 0;
+        const canEdit = isOwner || internalShares[0]?.canEdit || false;
+
+        return {
+          ...note,
+          isInternalShared: !isOwner && hasInternalShare,
+          canEdit,
+        };
+      });
     }),
   publicList: publicProcedure
     .meta({

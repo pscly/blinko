@@ -1,11 +1,17 @@
 import "vditor/dist/index.css";
 import '@/styles/vditor.css';
 import { RootStore } from '@/store';
-import React, { ReactElement, useState, useEffect } from 'react';
+import React, { ReactElement, useCallback, useEffect, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { observer, useLocalObservable } from 'mobx-react-lite';
 import { createPortal } from 'react-dom';
-import { FileType, OnSendContentType } from './type';
+import {
+  EDITOR_SESSION_CONTEXT,
+  QUICK_CAPTURE_EDITOR_ACTION,
+  type EditorInitialData,
+  type FileType,
+  type OnSendContentType,
+} from './type';
 import { BlinkoStore } from '@/store/blinkoStore';
 import { useTranslation } from 'react-i18next';
 import { useMediaQuery } from 'usehooks-ts';
@@ -32,6 +38,10 @@ import { PluginApiStore } from "@/store/plugin/pluginApiStore";
 import { PluginRender } from '@/store/plugin/pluginRender';
 import { IconButton } from "./Toolbar/IconButton";
 import { ResourceReferenceButton } from "./Toolbar/ResourceReferenceButton";
+import {
+  QuickCaptureToolbar,
+} from './quickCaptureActions';
+import { useQuickCaptureActions } from './useQuickCaptureActions';
 
 //https://ld246.com/guide/markdown
 type IProps = {
@@ -46,18 +56,31 @@ type IProps = {
   originReference?: number[],
   hiddenToolbar?: boolean,
   withoutOutline?: boolean,
-  initialData?: { file?: File, text?: string },
+  initialData?: EditorInitialData,
   showTopToolbar?: boolean
 }
 
 const Editor = observer(({ content, onChange, onSend, isSendLoading, originFiles, originReference = [], mode, onHeightChange, hiddenToolbar = false, withoutOutline = false, initialData, showTopToolbar = false }: IProps) => {
-  const cardRef = React.useRef(null)
+  const cardRef = React.useRef<HTMLDivElement | null>(null)
   const isPc = useMediaQuery('(min-width: 768px)')
   const store = useLocalObservable(() => new EditorStore())
   const pluginApi = RootStore.Get(PluginApiStore)
   const blinko = RootStore.Get(BlinkoStore)
   const { t } = useTranslation()
   const [openPopover, setOpenPopover] = useState<string | null>(null);
+  const showQuickCaptureToolbar = mode === 'create' && !isPc && initialData?.context === EDITOR_SESSION_CONTEXT.quickCapture;
+  const uploadInitialFile = store.uploadFiles;
+  const { handleOpenRecentNotes } = useQuickCaptureActions({
+    showQuickCaptureToolbar,
+    store,
+  });
+
+  const handleMobileEditorKeydown = useCallback(() => {
+    onHeightChange?.();
+    if (!isPc) {
+      store.adjustMobileEditorHeight();
+    }
+  }, [isPc, onHeightChange, store]);
 
   useEffect(() => {
     const handleClosePopover = (name: string) => {
@@ -70,6 +93,19 @@ const Editor = observer(({ content, onChange, onSend, isSendLoading, originFiles
       eventBus.off('plugin:closeToolBarContent', handleClosePopover);
     };
   }, [openPopover]);
+
+  useEffect(() => {
+    const currentCard = cardRef.current;
+    if (!currentCard) {
+      return;
+    }
+
+    currentCard.addEventListener('keydown', handleMobileEditorKeydown);
+
+    return () => {
+      currentCard.removeEventListener('keydown', handleMobileEditorKeydown);
+    };
+  }, [handleMobileEditorKeydown]);
 
   // Render toolbar to top when showTopToolbar is true
   const renderToolbar = () => {
@@ -167,10 +203,10 @@ const Editor = observer(({ content, onChange, onSend, isSendLoading, originFiles
         onChange?.(initialData.text)
       }
       if (initialData.file) {
-        store.uploadFiles([initialData.file]);
+        uploadInitialFile([initialData.file]);
       }
     }
-  }, [initialData, mode]);
+  }, [initialData, mode, onChange, uploadInitialFile]);
 
   const {
     getRootProps,
@@ -227,12 +263,7 @@ const Editor = observer(({ content, onChange, onSend, isSendLoading, originFiles
         }}>
 
         <div ref={cardRef}
-          className={`overflow-visible relative ${showTopToolbar ? 'flex-1 flex flex-col min-h-0' : ''}`}
-          onKeyDown={e => {
-            onHeightChange?.()
-            if (isPc) return
-            store.adjustMobileEditorHeight()
-          }}>
+          className={`overflow-visible relative ${showTopToolbar ? 'flex-1 flex flex-col min-h-0' : ''}`}>
 
             <div id={`vditor-${mode}`} className={`vditor ${showTopToolbar ? 'flex-1 overflow-hidden flex flex-col fullscreen-editor' : ''}`} />
           {store.files.length > 0 && (
@@ -245,6 +276,16 @@ const Editor = observer(({ content, onChange, onSend, isSendLoading, originFiles
             <ReferenceRender store={store} />
           </div>
 
+          {showQuickCaptureToolbar && <QuickCaptureToolbar
+            onTimestamp={() => {
+              eventBus.emit('editor:quickCaptureAction', QUICK_CAPTURE_EDITOR_ACTION.timestamp);
+            }}
+            onContinue={() => {
+              eventBus.emit('editor:quickCaptureAction', QUICK_CAPTURE_EDITOR_ACTION.continueWriting);
+            }}
+            onContinueHistory={handleOpenRecentNotes}
+          />}
+
           {/* Editor Footer Slots */}
           {pluginApi.customEditorFooterSlots
             .filter(slot => {
@@ -254,20 +295,41 @@ const Editor = observer(({ content, onChange, onSend, isSendLoading, originFiles
               return true;
             })
             .sort((a, b) => (a.order || 0) - (b.order || 0))
-            .map((slot) => (
-              <div
-                key={slot.name}
-                className={`mb-2 ${slot.className || ''}`}
-                style={slot.style}
-                onClick={slot.onClick}
-                onMouseEnter={slot.onHover}
-                onMouseLeave={slot.onLeave}
-              >
+            .map((slot) => {
+              const slotContent = (
                 <div style={{ maxWidth: slot.maxWidth }}>
                   <PluginRender content={slot.content} data={mode} />
                 </div>
-              </div>
-            ))}
+              );
+
+              if (slot.onClick) {
+                return (
+                  <button
+                    type="button"
+                    key={slot.name}
+                    className={`mb-2 ${slot.className || ''}`}
+                    style={slot.style}
+                    onClick={slot.onClick}
+                    onPointerEnter={slot.onHover}
+                    onPointerLeave={slot.onLeave}
+                  >
+                    {slotContent}
+                  </button>
+                );
+              }
+
+              return (
+                <div
+                  key={slot.name}
+                  className={`mb-2 ${slot.className || ''}`}
+                  style={slot.style}
+                  onPointerEnter={slot.onHover}
+                  onPointerLeave={slot.onLeave}
+                >
+                  {slotContent}
+                </div>
+              );
+            })}
 
           {!showTopToolbar && (
             <div className='flex w-full items-center gap-1 mt-auto'>

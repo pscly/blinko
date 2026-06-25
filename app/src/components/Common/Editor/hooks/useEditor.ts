@@ -754,4 +754,4 @@ export const useEditorHeight = (
   useEffect(() => {
     onHeightChange?.();
   }, [store.noteType, content, store.files?.length, store.viewMode]);
-}; 
+};

@@ -1,6 +1,6 @@
-name: Android Debug APK
+name: Android arm64-v8a APK
 
-run-name: Build Android debug APK from ${{ github.ref_name }}
+run-name: Build Android arm64-v8a APK from ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
         description: 'GitHub Actions artifact name for the APK bundle'
         required: false
         type: string
-        default: 'blinko-android-debug-apk'
+        default: 'blinko-android-arm64-v8a-apk'
 
 permissions:
   contents: read
@@ -19,7 +19,7 @@ env:
 
 jobs:
   build-debug-apk:
-    name: Build unsigned Android APK artifact
+    name: Build Android arm64-v8a APK artifact
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -47,7 +47,7 @@ jobs:
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -83,7 +83,7 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2.0.0-alpha"
 
-      - name: Build Android APK without release secrets
+      - name: Build Android arm64-v8a APK without production signing secrets
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.ANDROID_NDK_VERSION }}
           NODE_OPTIONS: --max-old-space-size=4096
@@ -107,29 +107,33 @@ jobs:
           storeFile=$HOME/.android/debug-upload-keystore.jks
           EOF
           cd app
-          bun run tauri:android:build -- --debug --apk --ci
+          bun run tauri:android:build -- --target aarch64 --apk --ci
 
       - name: Collect APK outputs
         run: |
           set -euo pipefail
           mkdir -p android-apk-artifacts
-          find app/src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' -print -exec cp {} android-apk-artifacts/ \;
-          if ! ls android-apk-artifacts/*.apk >/dev/null 2>&1; then
-            echo "::error::No APK files were produced by the Android build."
+          APK_ROOT="app/src-tauri/gen/android/app/build/outputs/apk"
+          mapfile -t APK_CANDIDATES < <(find "$APK_ROOT" -type f -name '*.apk' ! -path '*/universal/*' | sort)
+          if [ "${#APK_CANDIDATES[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one arm64-v8a APK, found ${#APK_CANDIDATES[@]}."
+            find "$APK_ROOT" -type f -name '*.apk' -print || true
             exit 1
           fi
+          cp "${APK_CANDIDATES[0]}" android-apk-artifacts/Blinko_arm64-v8a_release-test-signed.apk
           ls -lh android-apk-artifacts
 
       - name: Upload Android APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.inputs.artifact_name || 'blinko-android-debug-apk' }}
+          name: ${{ github.event.inputs.artifact_name || 'blinko-android-arm64-v8a-apk' }}
           path: android-apk-artifacts/*.apk
           if-no-files-found: error
           retention-days: 14
 
       - name: Download summary
         run: |
-          echo "### Android debug APK artifact ready" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Artifact: ${{ github.event.inputs.artifact_name || 'blinko-android-debug-apk' }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- This APK is for manual testing from GitHub Actions artifacts, not a signed Release asset." >> "$GITHUB_STEP_SUMMARY"
+          echo "### Android arm64-v8a APK artifact ready" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Artifact: ${{ github.event.inputs.artifact_name || 'blinko-android-arm64-v8a-apk' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ABI: arm64-v8a only, for modern Android phones." >> "$GITHUB_STEP_SUMMARY"
+          echo "- Signing: release-mode APK signed with a workflow-generated test key, not the production upload key." >> "$GITHUB_STEP_SUMMARY"

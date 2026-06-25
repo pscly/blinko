@@ -13,6 +13,7 @@ import com.plugin.blinko.Blinko
 class MainActivity : TauriActivity() {
     private var hasInjectedShortcut = false
     private var hasInjectedShare = false
+    private var hasInjectedQuickCaptureOverlay = false
     private val blinko = Blinko()
     private val supportedShortcutActions = setOf("quick_note", "voice_recording", "quick_capture")
 
@@ -23,6 +24,7 @@ class MainActivity : TauriActivity() {
         enableWebViewBounceEffect()
         handleShortcutIntent()
         handleShareIntent()
+        handleQuickCaptureOverlayIntent()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -31,8 +33,10 @@ class MainActivity : TauriActivity() {
         // Reset flags for new intent
         hasInjectedShortcut = false
         hasInjectedShare = false
+        hasInjectedQuickCaptureOverlay = false
         handleShortcutIntent()
         handleShareIntent()
+        handleQuickCaptureOverlayIntent()
     }
 
     private fun enableWebViewBounceEffect() {
@@ -121,6 +125,27 @@ class MainActivity : TauriActivity() {
         }
     }
 
+    private fun handleQuickCaptureOverlayIntent() {
+        if (hasInjectedQuickCaptureOverlay) return
+        if (intent?.action != QuickCaptureOverlayBridge.ACTION_SUBMIT) return
+
+        val prefs = getSharedPreferences(QuickCaptureOverlayBridge.PREFS_NAME, MODE_PRIVATE)
+        val text = prefs.getString(QuickCaptureOverlayBridge.PENDING_TEXT_KEY, null)?.trim()
+        if (text.isNullOrEmpty()) return
+
+        hasInjectedQuickCaptureOverlay = true
+        prefs.edit().remove(QuickCaptureOverlayBridge.PENDING_TEXT_KEY).apply()
+
+        val payload = JSONObject().apply {
+            put("text", text)
+            put("source", QuickCaptureOverlayBridge.PAYLOAD_SOURCE)
+        }
+
+        window.decorView.postDelayed({
+            injectShareData(payload.toString(), true)
+        }, 1500L)
+    }
+
     private fun intentToJson(intent: Intent): JSONObject {
         val json = JSONObject()
         Log.i("processing", intent.toUri(0))
@@ -169,16 +194,16 @@ class MainActivity : TauriActivity() {
         return displayName
     }
 
-    private fun injectShareData(shareData: String) {
+    private fun injectShareData(shareData: String, replaceExisting: Boolean = false) {
         try {
-            val escapedData = shareData.replace("\\", "\\\\").replace("\"", "\\\"").replace("'", "\\'")
+            val escapedData = JSONObject.quote(shareData)
             findWebView(window.decorView)?.evaluateJavascript(
                 """
                 (function() {
                     var key = 'android_share_data';
                     var existing = window.localStorage.getItem(key);
-                    if (!existing || existing === 'null' || existing === '') {
-                        window.localStorage.setItem(key, '$escapedData');
+                    if ($replaceExisting || !existing || existing === 'null' || existing === '') {
+                        window.localStorage.setItem(key, $escapedData);
                         console.log('Injected share data');
                     } else {
                         console.log('Share data already exists');

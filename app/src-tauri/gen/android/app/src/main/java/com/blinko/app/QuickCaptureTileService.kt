@@ -3,7 +3,6 @@ package com.blinko.app
 import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Intent
-import android.net.Uri
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
@@ -31,10 +30,8 @@ class QuickCaptureTileService : TileService() {
     }
 
     private fun launchQuickCapture() {
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            data = Uri.parse(QUICK_CAPTURE_URI)
+        val intent = Intent(this, QuickCaptureOverlayActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            setClassName(packageName, "$packageName.MainActivity")
         }
 
         val pendingIntent = PendingIntent.getActivity(
@@ -53,7 +50,6 @@ class QuickCaptureTileService : TileService() {
     }
 
     companion object {
-        private const val QUICK_CAPTURE_URI = "blinko://shortcut/quick_capture"
         private const val QUICK_CAPTURE_REQUEST_CODE = 4101
     }
 }

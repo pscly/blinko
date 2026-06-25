@@ -1,0 +1,218 @@
+name: Android Release APK
+
+run-name: Build signed Android release APK from ${{ github.ref_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag (e.g. android-quick-capture-v1). If blank, auto-generated.'
+        required: false
+        type: string
+        default: ''
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  ANDROID_NDK_VERSION: 27.0.11902837
+
+jobs:
+  build-signed-release:
+    name: Build, Sign, and Publish Android Release APK
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      apk_asset_name: ${{ steps.meta.outputs.apk_asset_name }}
+      release_url: ${{ steps.publish.outputs.url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate signing secret
+        env:
+          UPLOAD_KEYSTORE: ${{ secrets.UPLOAD_KEYSTORE }}
+        run: |
+          if [ -z "$UPLOAD_KEYSTORE" ]; then
+            echo "::error::Missing required secret UPLOAD_KEYSTORE (base64-encoded .jks keystore)."
+            echo "### Android release blocked" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Blocker: UPLOAD_KEYSTORE secret is not configured." >> "$GITHUB_STEP_SUMMARY"
+            echo "- Fix: add a base64-encoded Android upload keystore as the UPLOAD_KEYSTORE repo secret." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "UPLOAD_KEYSTORE is configured; proceeding with signed release build."
+
+      - name: Prepare release metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          INPUT_TAG="${{ github.event.inputs.release_tag }}"
+          if [ -n "$INPUT_TAG" ]; then
+            RELEASE_TAG="$INPUT_TAG"
+          else
+            RELEASE_TAG="android-quick-capture-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          fi
+          APK_ASSET_NAME="Blinko_${RELEASE_TAG}_universal.apk"
+          APK_PATH="app/src-tauri/gen/android/app/build/outputs/apk/universal/release/${APK_ASSET_NAME}"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "apk_asset_name=$APK_ASSET_NAME" >> "$GITHUB_OUTPUT"
+          echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $RELEASE_TAG"
+          echo "APK asset name: $APK_ASSET_NAME"
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;${ANDROID_NDK_VERSION}"
+
+      - name: Setup Node Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install Rust Stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+          cache-on-failure: true
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.2.8
+
+      - name: Install Dependencies
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: bun install --frozen-lockfile
+
+      - name: Run Prisma Generate
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: bun run prisma:generate
+
+      - name: Configure Gradle Cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0.0-alpha"
+
+      - name: Configure Android keystore
+        env:
+          UPLOAD_KEYSTORE: ${{ secrets.UPLOAD_KEYSTORE }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.android"
+          printf '%s' "$UPLOAD_KEYSTORE" | base64 --decode > "$HOME/.android/upload-keystore.jks"
+          chmod 600 "$HOME/.android/upload-keystore.jks"
+          mkdir -p app/src-tauri/gen/android
+          cat > app/src-tauri/gen/android/keystore.properties <<'EOF'
+          password=106111
+          keyAlias=upload
+          storeFile=PLACEHOLDER
+          EOF
+          sed -i "s|PLACEHOLDER|$HOME/.android/upload-keystore.jks|" app/src-tauri/gen/android/keystore.properties
+          echo "Keystore configured (path only shown as $HOME variable)."
+
+      - name: Build signed Android Release APK
+        id: build_android
+        continue-on-error: true
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.ANDROID_NDK_VERSION }}
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          cd app
+          bun run tauri:android:build -- --apk
+
+      - name: Stop after Android build failure
+        if: steps.build_android.outcome == 'failure'
+        run: |
+          echo "::error::Android release build failed. No GitHub Release was created."
+          echo "### Android release failed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Failure: tauri android build command failed." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: Rename Android APK asset
+        run: |
+          set -euo pipefail
+          APK_DIR="app/src-tauri/gen/android/app/build/outputs/apk/universal/release"
+          SOURCE_APK="$APK_DIR/app-universal-release.apk"
+          TARGET_APK="${{ steps.meta.outputs.apk_path }}"
+          if [ ! -f "$SOURCE_APK" ]; then
+            echo "::error::Expected signed APK not found at $SOURCE_APK."
+            exit 1
+          fi
+          mv "$SOURCE_APK" "$TARGET_APK"
+          ls -lh "$TARGET_APK"
+          echo "Renamed signed APK to ${{ steps.meta.outputs.apk_asset_name }}"
+
+      - name: Publish GitHub Release with signed APK
+        id: publish
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.meta.outputs.release_tag }}
+          target_commitish: ${{ github.sha }}
+          name: Blinko Android Quick Capture ${{ steps.meta.outputs.release_tag }}
+          body: |
+            Signed Android release APK with quick-capture floating overlay.
+
+            - Built from commit: ${{ github.sha }}
+            - Branch: ${{ github.ref_name }}
+            - APK asset: ${{ steps.meta.outputs.apk_asset_name }}
+
+            Install: download the APK, allow install from unknown sources, and open it on your Android device.
+          files: ${{ steps.meta.outputs.apk_path }}
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release summary
+        if: success()
+        run: |
+          echo "### Android release published" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Release tag: ${{ steps.meta.outputs.release_tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- APK asset: ${{ steps.meta.outputs.apk_asset_name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Release URL: ${{ steps.publish.outputs.url }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Release failure summary
+        if: failure()
+        run: |
+          echo "### Android release failed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Release tag candidate: ${{ steps.meta.outputs.release_tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Safety: no APK was published on failure." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup signing files
+        if: always()
+        run: |
+          rm -f "$HOME/.android/upload-keystore.jks"
+          rm -f app/src-tauri/gen/android/keystore.properties
+          echo "Cleaned Android signing files from runner workspace."

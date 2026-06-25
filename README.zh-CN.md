@@ -66,6 +66,10 @@ Blinko 是一个AI驱动的卡片笔记项目，专为那些想要快速捕捉�
 curl -s https://raw.githubusercontent.com/blinko-space/blinko/main/install.sh | bash
 ```
 
+## 🔧维护说明
+
+- Android 快速速记自动同步发布维护文档：`docs/android-quick-capture-autorelease.zh-CN.md`
+
 ## 👨🏼‍💻贡献
 贡献是开源社区充满活力、创造力和学习机会的核心。你的参与有助于推动创新和发展。我们深深感谢任何形式的贡献，并很高兴有你成为我们社区的一部分。感谢你的支持！🙌
 

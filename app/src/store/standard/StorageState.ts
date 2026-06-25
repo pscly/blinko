@@ -22,10 +22,10 @@ export class StorageState<T> {
 
   load() {
     try {
-      if (typeof window == 'undefined') return
+      if (typeof window === 'undefined') return
       const value = window?.localStorage?.getItem(this.key);
       this.value = StorageState.safeParse(value);
-      if (this.value == null) {
+      if (this.value === null || this.value === undefined) {
         this.value = this.default;
       }
       return this.value;
@@ -37,8 +37,8 @@ export class StorageState<T> {
 
   save(value?: T) {
     try {
-      if (typeof window == 'undefined') return
-      if (value !== null || value !== undefined) {
+      if (typeof window === 'undefined') return
+      if (value !== undefined) {
         this.value = this.validate ? this.validate(value!) : value;
       }
       window?.localStorage.setItem(this.key, JSON.stringify(this.value));
@@ -54,8 +54,9 @@ export class StorageState<T> {
 
   clear() {
     try {
-      if (typeof window == 'undefined') return
+      if (typeof window === 'undefined') return
       window?.localStorage.removeItem(this.key);
+      this.value = this.default;
     } catch (error) {
       return null;
     }

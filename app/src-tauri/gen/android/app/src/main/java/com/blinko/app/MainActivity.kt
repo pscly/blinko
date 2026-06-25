@@ -14,6 +14,7 @@ class MainActivity : TauriActivity() {
     private var hasInjectedShortcut = false
     private var hasInjectedShare = false
     private val blinko = Blinko()
+    private val supportedShortcutActions = setOf("quick_note", "voice_recording", "quick_capture")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Apply saved theme before super.onCreate to prevent flash
@@ -55,11 +56,13 @@ class MainActivity : TauriActivity() {
         intent?.data?.let { uri ->
             if (uri.scheme == "blinko" && uri.host == "shortcut") {
                 uri.pathSegments?.firstOrNull()?.let { action ->
-                    hasInjectedShortcut = true
-                    // Single injection with reasonable delay for WebView to be ready
-                    window.decorView.postDelayed({
-                        injectShortcutAction(action)
-                    }, 1500L)
+                    if (action in supportedShortcutActions) {
+                        hasInjectedShortcut = true
+                        // Single injection with reasonable delay for WebView to be ready
+                        window.decorView.postDelayed({
+                            injectShortcutAction(action)
+                        }, 1500L)
+                    }
                 }
             }
         }

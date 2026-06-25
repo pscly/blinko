@@ -11,6 +11,10 @@
     <string name="voice_recording_long">Voice Recording</string>
     <string name="voice_recording_disabled">Voice recording is disabled</string>
 
+    <!-- Quick Settings Tile -->
+    <string name="quick_capture_tile_label">Quick Capture</string>
+    <string name="quick_capture_tile_subtitle">Capture a note</string>
+
     <!-- Widget -->
     <string name="widget_voice_note_description">Quick Voice Note</string>
 </resources>

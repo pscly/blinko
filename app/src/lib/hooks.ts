@@ -3,12 +3,9 @@ import { helper } from "./helper";
 import { BlinkoStore } from "@/store/blinkoStore";
 import { RootStore } from "@/store";
 import { isAndroid, isInTauri } from '@/lib/tauriHelper';
-import { ShowEditBlinkoModel } from '@/components/BlinkoRightClickMenu';
 import { consumeAndroidShortcutAction } from './androidShortcutActions';
 import { handleAndroidShortcutAction } from './androidShortcutHandlers';
-
-import { readFile } from "@tauri-apps/plugin-fs";
-import { ToastPlugin } from "@/store/module/Toast/Toast";
+import { ANDROID_SHARE_DATA_STORAGE_KEY, consumeAndroidShareData } from './androidShareData';
 
 export const useConfigSetting = (configKey: keyof BlinkoStore['config']['value']) => {
   const blinko = RootStore.Get(BlinkoStore);
@@ -28,7 +25,7 @@ export const useConfigSetting = (configKey: keyof BlinkoStore['config']['value']
     if (blinko.config.value && blinko.config.value[configKey]) {
       store.setValue(blinko.config.value[configKey] as string);
     }
-  }, [blinko.config.value, configKey]);
+  }, [blinko.config.value, configKey, store.setValue]);
 
   return {
     value: store.value,
@@ -196,49 +193,11 @@ const initializeAndroidShortcuts = () => {
         handleAndroidShortcutAction(action);
       }
 
-      // Handle shared data
-      const shareDataStr = window.localStorage.getItem('android_share_data');
-      if (shareDataStr && !isProcessingSharedData) {
+      if (window.localStorage.getItem(ANDROID_SHARE_DATA_STORAGE_KEY) && !isProcessingSharedData) {
         isProcessingSharedData = true;
-        // alert(shareDataStr)
-        window.localStorage.removeItem('android_share_data');
-        try {
-          const shareData = JSON.parse(shareDataStr);
-          if (shareData.text) {
-            // Remove surrounding quotes (single, double, backticks) and trim whitespace
-            let cleanText = shareData.text.trim();
-            if ((cleanText.startsWith('"') && cleanText.endsWith('"')) ||
-                (cleanText.startsWith("'") && cleanText.endsWith("'")) ||
-                (cleanText.startsWith('`') && cleanText.endsWith('`'))) {
-              cleanText = cleanText.slice(1, -1);
-            }
-            ShowEditBlinkoModel('2xl', 'create', { text: cleanText });
-            isProcessingSharedData = false;
-          }
-          else if (shareData.stream && shareData.content_type) {
-            readFile(shareData.stream).then(contents => {
-              const file = new File([contents], shareData.name || 'shared_file', {
-                type: shareData.content_type
-              });
-              console.log('xxx!!!')
-              ShowEditBlinkoModel('2xl', 'create', { file });
-              isProcessingSharedData = false;
-            }).catch((error: Error) => {
-              console.warn('fetching shared content failed:', error);
-              RootStore.Get(ToastPlugin).error(error?.message)
-              isProcessingSharedData = false;
-            });
-          }
-          else {
-            ShowEditBlinkoModel('2xl', 'create');
-            isProcessingSharedData = false;
-          }
-        } catch (e) {
-          console.error('Failed to parse share data:', e);
-          // Fallback: just open create modal
-          RootStore.Get(ToastPlugin).error(e?.message)
-          setTimeout(() => { isProcessingSharedData = false; }, 100);
-        }
+        void consumeAndroidShareData(window.localStorage).finally(() => {
+          isProcessingSharedData = false;
+        });
       }
     };
 
@@ -270,4 +229,3 @@ export const useAndroidShortcuts = () => {
     };
   }, []);
 };
-

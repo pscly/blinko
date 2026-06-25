@@ -359,7 +359,7 @@ jobs:
       - name: Build Android App
         run: |
           cd app
-          bun run tauri:android:build -- --target aarch64 --apk
+          bun run tauri:android:build
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.11902837
 

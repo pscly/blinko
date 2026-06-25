@@ -107,7 +107,7 @@ jobs:
           storeFile=$HOME/.android/debug-upload-keystore.jks
           EOF
           cd app
-          bun run tauri:android:build -- --target aarch64 --apk --ci
+          bun run tauri:android:build -- --ci
 
       - name: Collect APK outputs
         run: |
